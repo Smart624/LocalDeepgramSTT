@@ -1,0 +1,5 @@
+default_directory: N:\Cursos
+include_subfolders: false
+language: pt-BR
+max_concurrent_tasks: 5
+watch_directory: false

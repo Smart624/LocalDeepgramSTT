@@ -1,0 +1,9 @@
+deepgram-sdk
+python-dotenv
+aiofiles
+tqdm
+PyYAML
+pydub
+watchdog
+moviepy
+backoff
