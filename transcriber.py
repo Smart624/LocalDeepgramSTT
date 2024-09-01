@@ -3,11 +3,13 @@ import asyncio
 import logging
 from pathlib import Path
 from typing import List, Dict
-from deepgram import DeepgramClient, PrerecordedOptions, FileSource
+from deepgram import DeepgramClient, PrerecordedOptions
 import aiofiles
 import backoff
 from pydub import AudioSegment
 from utils.audio_utils import extract_audio_from_video, chunk_audio
+import unicodedata
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -20,21 +22,15 @@ class AudioTranscriber:
     @backoff.on_exception(backoff.expo, Exception, max_tries=3)
     async def transcribe_chunk(self, chunk_path: Path) -> dict:
         try:
-            with open(chunk_path, "rb") as file:
-                buffer_data = file.read()
-
-            payload: FileSource = {
-                "buffer": buffer_data,
-            }
-
-            options = PrerecordedOptions(
-                model="nova-2",
-                smart_format=True,
-                language=self.config.language,
-            )
-
-            response = await self.deepgram.listen.rest.v("1").transcribe(payload, options)
-            return response.to_dict()
+            with open(chunk_path, "rb") as audio:
+                source = {"buffer": audio, "mimetype": "audio/wav"}
+                options = PrerecordedOptions(
+                    model="nova-2",
+                    smart_format=True,
+                    language=self.config.language,
+                )
+                response = await self.deepgram.listen.prerecorded.v("1").transcribe_file(source, options)
+                return response
         except Exception as e:
             logger.error(f"Failed to transcribe chunk {chunk_path}: {e}")
             raise
@@ -71,12 +67,13 @@ class AudioTranscriber:
                 combined['results']['channels'][0]['alternatives'][0]['transcript'] += ' ' + t['results']['channels'][0]['alternatives'][0]['transcript']
         return combined
 
+
     def fix_encoding(self, text):
         # Fix common encoding issues
         fixes = {
             'Ã£': 'ã', 'Ãµ': 'õ', 'Ã¡': 'á', 'Ã¢': 'â', 'Ã©': 'é',
             'Ãª': 'ê', 'Ã­': 'í', 'Ã³': 'ó', 'Ã´': 'ô', 'Ãº': 'ú',
-            'Ã§': 'ç', 'Ã�': 'Á', 'Ã‰': 'É', 'Ã�': 'Í', 'Ã"': 'Ó',
+            'Ã§': 'ç', 'Ã ': 'Á', 'Ã‰': 'É', 'Ã ': 'Í', 'Ã"': 'Ó',
             'Ãš': 'Ú', 'Ã€': 'À', 'Ãƒ': 'Ã'
         }
         for wrong, right in fixes.items():
@@ -166,7 +163,7 @@ class AudioTranscriber:
     async def transcribe_all_in_directory(self, directory: Path) -> None:
         files = self.get_media_files(directory)
         tasks = [self.process_file(file) for file in files]
-        await tqdm.gather(*tasks, desc="Transcribing files", total=len(tasks))
+        await asyncio.gather(*tasks)
 
     def merge_transcriptions(self, directory: Path) -> None:
         transcripts = []
