@@ -115,32 +115,39 @@ class AudioTranscriber:
             text = text.replace(wrong, right)
         return unicodedata.normalize('NFC', text)
 
-    def json_to_markdown(self, json_data: dict) -> str:
-        md_content = "# Transcription\n\n"
+    def json_to_markdown(self, json_data: dict) -> tuple:
+        non_diarized_content = ""
+        diarized_content = ""
         
-        # Add metadata
-        md_content += "## Metadata\n\n"
-        if 'metadata' in json_data:
-            md_content += f"- Duration: {json_data['metadata'].get('duration', 'N/A')} seconds\n"
-            md_content += f"- Channels: {json_data['metadata'].get('channels', 'N/A')}\n"
-        md_content += f"- Model: {json_data.get('model', 'N/A')}\n\n"
-
-        # Add transcript
-        md_content += "## Transcript\n\n"
         if 'results' in json_data and 'channels' in json_data['results']:
             for result in json_data['results']['channels']:
                 for alternative in result.get('alternatives', []):
                     transcript = alternative.get('transcript', '')
-                    md_content += self.fix_encoding(transcript) + "\n\n"
+                    non_diarized_content += self.fix_encoding(transcript) + "\n\n"
+                    
+                    if 'paragraphs' in alternative:
+                        for paragraph in alternative['paragraphs'].get('paragraphs', []):
+                            speaker = paragraph.get('speaker', 'Unknown')
+                            paragraph_text = ""
 
-        return md_content
+                            # Extract text from each sentence in the paragraph
+                            for sentence in paragraph.get('sentences', []):
+                                text = sentence.get('text', '')
+                                paragraph_text += text + " "
+
+                            # Only add content if there is actual text
+                            if paragraph_text.strip():
+                                diarized_content += f"Speaker {speaker}: {self.fix_encoding(paragraph_text.strip())}\n\n"
+
+        return non_diarized_content.strip(), diarized_content.strip()
 
     async def process_file(self, file_path: Path) -> None:
         try:
-            file_path = file_path.resolve()  # Ensure we're working with an absolute path
+            file_path = file_path.resolve()
             transcript_path = file_path.with_suffix('.md')
+            diarized_transcript_path = file_path.with_name(f"{file_path.stem}_diarized.md")
 
-            if transcript_path.exists():
+            if transcript_path.exists() or diarized_transcript_path.exists():
                 logger.info(f"Transcript already exists for {file_path}. Skipping.")
                 return
 
@@ -158,16 +165,20 @@ class AudioTranscriber:
             json_response = await self.transcribe_audio(audio_path)
             
             if json_response:
-                markdown_content = self.json_to_markdown(json_response)
+                non_diarized_content, diarized_content = self.json_to_markdown(json_response)
 
-                logger.info(f"Writing transcript to {transcript_path}")
+                logger.info(f"Writing non-diarized transcript to {transcript_path}")
                 async with aiofiles.open(transcript_path, 'w', encoding='utf-8') as f:
-                    await f.write(markdown_content)
+                    await f.write(non_diarized_content)
 
-                logger.info(f"Transcript saved as {transcript_path}")
+                logger.info(f"Writing diarized transcript to {diarized_transcript_path}")
+                async with aiofiles.open(diarized_transcript_path, 'w', encoding='utf-8') as f:
+                    await f.write(diarized_content)
+
+                logger.info(f"Transcripts saved as {transcript_path} and {diarized_transcript_path}")
             else:
                 logger.error(f"Failed to obtain transcription for {audio_path}")
-
+                
             # Cleanup the main audio file if it was extracted from a video
             if audio_path != file_path:
                 await asyncio.get_event_loop().run_in_executor(
