@@ -2,7 +2,7 @@ import os
 import asyncio
 import logging
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Tuple
 from deepgram import DeepgramClient, PrerecordedOptions
 import aiofiles
 import backoff
@@ -37,7 +37,6 @@ class AudioTranscriber:
                             diarize=True,
                         )
                         
-                        # Wrap the transcribe_file call in asyncio.wait_for to implement timeout
                         response = await asyncio.wait_for(
                             self.run_transcribe(source, options),
                             timeout=self.timeout
@@ -51,7 +50,6 @@ class AudioTranscriber:
                     raise
 
     async def run_transcribe(self, source, options):
-        # This method wraps the synchronous transcribe_file method in a coroutine
         return await asyncio.to_thread(
             self.deepgram.listen.prerecorded.v("1").transcribe_file,
             source,
@@ -74,18 +72,15 @@ class AudioTranscriber:
         transcription_tasks = [self.transcribe_chunk(chunk) for chunk in chunks]
         transcriptions = await asyncio.gather(*transcription_tasks, return_exceptions=True)
 
-        # Handle any exceptions from transcription tasks
         valid_transcriptions = []
         for i, result in enumerate(transcriptions):
             if isinstance(result, Exception):
                 logger.error(f"Failed to transcribe chunk {i}: {str(result)}")
             else:
-                valid_transcriptions.append(result.to_dict())  # Convert to dict here
+                valid_transcriptions.append(result.to_dict())
 
-        # Cleanup audio chunks
         await asyncio.get_event_loop().run_in_executor(self.executor, cleanup_audio_files, chunks)
 
-        # Combine transcriptions if there were multiple chunks
         if len(valid_transcriptions) > 1:
             combined_transcription = self.combine_transcriptions(valid_transcriptions)
         elif len(valid_transcriptions) == 1:
@@ -101,10 +96,15 @@ class AudioTranscriber:
         for t in transcriptions[1:]:
             if 'results' in t and 'channels' in t['results']:
                 combined['results']['channels'][0]['alternatives'][0]['transcript'] += ' ' + t['results']['channels'][0]['alternatives'][0]['transcript']
+                if 'words' in combined['results']['channels'][0]['alternatives'][0]:
+                    combined['results']['channels'][0]['alternatives'][0]['words'].extend(t['results']['channels'][0]['alternatives'][0].get('words', []))
+                if 'paragraphs' in combined['results']['channels'][0]['alternatives'][0]:
+                    combined['results']['channels'][0]['alternatives'][0]['paragraphs']['paragraphs'].extend(
+                        t['results']['channels'][0]['alternatives'][0].get('paragraphs', {}).get('paragraphs', [])
+                    )
         return combined
 
     def fix_encoding(self, text):
-        # Fix common encoding issues
         fixes = {
             'Ã£': 'ã', 'Ãµ': 'õ', 'Ã¡': 'á', 'Ã¢': 'â', 'Ã©': 'é',
             'Ãª': 'ê', 'Ã­': 'í', 'Ã³': 'ó', 'Ã´': 'ô', 'Ãº': 'ú',
@@ -115,31 +115,26 @@ class AudioTranscriber:
             text = text.replace(wrong, right)
         return unicodedata.normalize('NFC', text)
 
-    def json_to_markdown(self, json_data: dict) -> tuple:
-        non_diarized_content = ""
-        diarized_content = ""
-        
-        if 'results' in json_data and 'channels' in json_data['results']:
-            for result in json_data['results']['channels']:
-                for alternative in result.get('alternatives', []):
-                    transcript = alternative.get('transcript', '')
-                    non_diarized_content += self.fix_encoding(transcript) + "\n\n"
-                    
-                    if 'paragraphs' in alternative:
-                        for paragraph in alternative['paragraphs'].get('paragraphs', []):
-                            speaker = paragraph.get('speaker', 'Unknown')
-                            paragraph_text = ""
+    async def json_to_markdown(self, json_data: dict, non_diarized_file: Path, diarized_file: Path) -> None:
+        async with aiofiles.open(non_diarized_file, 'w', encoding='utf-8') as non_diarized_f, \
+                   aiofiles.open(diarized_file, 'w', encoding='utf-8') as diarized_f:
+            if 'results' in json_data and 'channels' in json_data['results']:
+                for result in json_data['results']['channels']:
+                    for alternative in result.get('alternatives', []):
+                        transcript = alternative.get('transcript', '')
+                        await non_diarized_f.write(self.fix_encoding(transcript) + "\n\n")
+                        
+                        if 'paragraphs' in alternative:
+                            for paragraph in alternative['paragraphs'].get('paragraphs', []):
+                                speaker = paragraph.get('speaker', 'Unknown')
+                                paragraph_text = ""
 
-                            # Extract text from each sentence in the paragraph
-                            for sentence in paragraph.get('sentences', []):
-                                text = sentence.get('text', '')
-                                paragraph_text += text + " "
+                                for sentence in paragraph.get('sentences', []):
+                                    text = sentence.get('text', '')
+                                    paragraph_text += text + " "
 
-                            # Only add content if there is actual text
-                            if paragraph_text.strip():
-                                diarized_content += f"Speaker {speaker}: {self.fix_encoding(paragraph_text.strip())}\n\n"
-
-        return non_diarized_content.strip(), diarized_content.strip()
+                                if paragraph_text.strip():
+                                    await diarized_f.write(f"Speaker {speaker}: {self.fix_encoding(paragraph_text.strip())}\n\n")
 
     async def process_file(self, file_path: Path) -> None:
         try:
@@ -147,13 +142,12 @@ class AudioTranscriber:
             transcript_path = file_path.with_suffix('.md')
             diarized_transcript_path = file_path.with_name(f"{file_path.stem}_diarized.md")
 
-            if transcript_path.exists() or diarized_transcript_path.exists():
-                logger.info(f"Transcript already exists for {file_path}. Skipping.")
+            if transcript_path.exists() and diarized_transcript_path.exists():
+                logger.info(f"Transcripts already exist for {file_path}. Skipping.")
                 return
 
             logger.info(f"Processing file: {file_path}")
             
-            # Extract audio if the file is a video
             if file_path.suffix.lower() in ('.mp4', '.mov', '.avi', '.mkv', '.webm'):
                 audio_path = await asyncio.get_event_loop().run_in_executor(
                     self.executor, extract_audio_from_video, file_path
@@ -165,21 +159,12 @@ class AudioTranscriber:
             json_response = await self.transcribe_audio(audio_path)
             
             if json_response:
-                non_diarized_content, diarized_content = self.json_to_markdown(json_response)
-
-                logger.info(f"Writing non-diarized transcript to {transcript_path}")
-                async with aiofiles.open(transcript_path, 'w', encoding='utf-8') as f:
-                    await f.write(non_diarized_content)
-
-                logger.info(f"Writing diarized transcript to {diarized_transcript_path}")
-                async with aiofiles.open(diarized_transcript_path, 'w', encoding='utf-8') as f:
-                    await f.write(diarized_content)
-
-                logger.info(f"Transcripts saved as {transcript_path} and {diarized_transcript_path}")
+                logger.info(f"Writing transcripts to {transcript_path} and {diarized_transcript_path}")
+                await self.json_to_markdown(json_response, transcript_path, diarized_transcript_path)
+                logger.info(f"Transcripts saved successfully")
             else:
                 logger.error(f"Failed to obtain transcription for {audio_path}")
                 
-            # Cleanup the main audio file if it was extracted from a video
             if audio_path != file_path:
                 await asyncio.get_event_loop().run_in_executor(
                     self.executor, cleanup_audio_files, [audio_path]
