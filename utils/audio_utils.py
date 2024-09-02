@@ -1,6 +1,7 @@
 from pathlib import Path
 from pydub import AudioSegment
 from moviepy.editor import VideoFileClip
+import subprocess
 import logging
 
 logger = logging.getLogger(__name__)
@@ -8,11 +9,17 @@ CHUNK_SIZE = 15 * 60  # 15 minutes in seconds
 
 def extract_audio_from_video(video_path: Path) -> Path:
     logger.info(f"Extracting audio from video file: {video_path}")
-    audio_path = video_path.with_suffix('.wav')
+    audio_path = video_path.with_suffix('.aac')
     try:
-        with VideoFileClip(str(video_path)) as video:
-            audio = video.audio
-            audio.write_audiofile(str(audio_path))
+        command = [
+            'ffmpeg',
+            '-i', str(video_path),
+            '-c:a', 'aac',
+            '-b:a', '96k',
+            '-vn',
+            str(audio_path)
+        ]
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         logger.info(f"Extracted audio saved to {audio_path}")
         return audio_path
     except Exception as e:
@@ -24,37 +31,51 @@ def chunk_audio(file_path: Path) -> list:
     logger.info(f"Chunking audio file: {file_path}")
 
     try:
-        # Convert to WAV if not already
-        if file_path.suffix.lower() != '.wav':
-            audio = AudioSegment.from_file(str(file_path))
-            wav_path = file_path.with_suffix('.wav')
-            audio.export(str(wav_path), format="wav")
-            file_path = wav_path
-            logger.info(f"Converted file to WAV: {file_path}")
+        # Convert to AAC if not already
+        if file_path.suffix.lower() != '.aac':
+            aac_path = file_path.with_suffix('.aac')
+            command = [
+                'ffmpeg',
+                '-i', str(file_path),
+                '-c:a', 'aac',
+                '-b:a', '96k',
+                str(aac_path)
+            ]
+            subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            file_path = aac_path
+            logger.info(f"Converted file to AAC: {file_path}")
 
-        audio = AudioSegment.from_wav(str(file_path))
-    except Exception as e:
-        logger.error(f"Error loading audio file: {e}")
-        raise
+        # Get duration of the audio file
+        probe_command = [
+            'ffprobe',
+            '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'default=noprint_wrappers=1:nokey=1',
+            str(file_path)
+        ]
+        duration = float(subprocess.check_output(probe_command).decode('utf-8').strip())
 
-    duration_ms = len(audio)
-    chunk_size_ms = CHUNK_SIZE * 1000  # Convert to milliseconds
+        if duration <= CHUNK_SIZE:
+            logger.info(f"File {file_path} is smaller than or equal to chunk size. Using whole file.")
+            return [file_path]
 
-    if duration_ms <= chunk_size_ms:
-        logger.info(f"File {file_path} is smaller than chunk size. Using whole file.")
-        return [file_path]
-
-    chunks = []
-    for i in range(0, duration_ms, chunk_size_ms):
-        chunk = audio[i:i+chunk_size_ms]
-        chunk_path = file_path.with_name(f"{file_path.stem}_chunk_{i//chunk_size_ms}.wav")
-        logger.info(f"Exporting chunk to {chunk_path}")
-        try:
-            chunk.export(str(chunk_path), format="wav")
+        chunks = []
+        for i in range(0, int(duration), CHUNK_SIZE):
+            chunk_path = file_path.with_name(f"{file_path.stem}_chunk_{i//CHUNK_SIZE}.aac")
+            chunk_command = [
+                'ffmpeg',
+                '-i', str(file_path),
+                '-ss', str(i),
+                '-t', str(CHUNK_SIZE),
+                '-c', 'copy',
+                str(chunk_path)
+            ]
+            subprocess.run(chunk_command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             chunks.append(chunk_path)
-        except Exception as e:
-            logger.error(f"Error exporting chunk {i//chunk_size_ms}: {e}")
-            raise
+            logger.info(f"Created chunk: {chunk_path}")
 
-    logger.info(f"Created {len(chunks)} chunks for {file_path}")
-    return chunks
+        logger.info(f"Created {len(chunks)} chunks for {file_path}")
+        return chunks
+    except Exception as e:
+        logger.error(f"Error processing audio file {file_path}: {e}")
+        raise

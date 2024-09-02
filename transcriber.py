@@ -6,10 +6,8 @@ from typing import List, Dict
 from deepgram import DeepgramClient, PrerecordedOptions
 import aiofiles
 import backoff
-from pydub import AudioSegment
 from utils.audio_utils import extract_audio_from_video, chunk_audio
 import unicodedata
-from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -23,23 +21,25 @@ class AudioTranscriber:
     async def transcribe_chunk(self, chunk_path: Path) -> dict:
         try:
             with open(chunk_path, "rb") as audio:
-                source = {"buffer": audio, "mimetype": "audio/wav"}
+                buffer_data = audio.read()
+                source = {"buffer": buffer_data, "mimetype": "audio/aac"}
                 options = PrerecordedOptions(
                     model="nova-2",
                     smart_format=True,
                     language=self.config.language,
+                    diarize=True,
                 )
-                response = await self.deepgram.listen.prerecorded.v("1").transcribe_file(source, options)
-                return response
+                response = self.deepgram.listen.rest.v("1").transcribe_file(source, options)
+                return response.to_dict()
         except Exception as e:
-            logger.error(f"Failed to transcribe chunk {chunk_path}: {e}")
+            logger.error(f"Failed to transcribe chunk {chunk_path}: {str(e)}")
             raise
 
     async def transcribe_audio(self, audio_path: Path) -> dict:
         try:
             chunks = chunk_audio(audio_path)
         except Exception as e:
-            logger.error(f"Error chunking audio file {audio_path}: {e}")
+            logger.error(f"Error chunking audio file {audio_path}: {str(e)}")
             return None
 
         transcriptions = []
@@ -50,7 +50,7 @@ class AudioTranscriber:
                 transcription = await self.transcribe_chunk(chunk)
                 transcriptions.append(transcription)
             except Exception as e:
-                logger.error(f"Failed to transcribe chunk {chunk}: {e}")
+                logger.error(f"Failed to transcribe chunk {chunk}: {str(e)}")
 
         # Combine transcriptions if there were multiple chunks
         if len(transcriptions) > 1:
@@ -66,7 +66,6 @@ class AudioTranscriber:
             if 'results' in t and 'channels' in t['results']:
                 combined['results']['channels'][0]['alternatives'][0]['transcript'] += ' ' + t['results']['channels'][0]['alternatives'][0]['transcript']
         return combined
-
 
     def fix_encoding(self, text):
         # Fix common encoding issues
@@ -133,7 +132,7 @@ class AudioTranscriber:
                     logger.error(f"Failed to obtain transcription for {audio_path}")
 
             except Exception as e:
-                logger.exception(f"Error processing file {file_path}: {e}")
+                logger.exception(f"Error processing file {file_path}: {str(e)}")
             finally:
                 logger.info("Cleaning up temporary files...")
                 self.cleanup_temp_files(file_path)
@@ -141,7 +140,7 @@ class AudioTranscriber:
     def cleanup_temp_files(self, original_file_path: Path):
         directory = original_file_path.parent
         stem = original_file_path.stem
-        for item in directory.glob(f"{stem}_chunk_*.wav"):
+        for item in directory.glob(f"{stem}_chunk_*.aac"):
             try:
                 item.unlink()
                 logger.info(f"Deleted temporary file: {item}")
