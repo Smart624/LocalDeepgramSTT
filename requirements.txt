@@ -7,3 +7,4 @@ pydub
 watchdog
 moviepy
 backoff
+aiolimiter
