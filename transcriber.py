@@ -6,6 +6,7 @@ from typing import List, Dict, Tuple
 from deepgram import DeepgramClient, PrerecordedOptions
 import aiofiles
 import backoff
+import json
 from utils.audio_utils import extract_audio_from_video, chunk_audio, cleanup_audio_files
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
@@ -14,8 +15,9 @@ from aiolimiter import AsyncLimiter
 logger = logging.getLogger(__name__)
 
 class AudioTranscriber:
-    def __init__(self, config):
+    def __init__(self, config, file_tracker):
         self.config = config
+        self.file_tracker = file_tracker
         self.semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests for Pay-as-you-go plan
         self.deepgram = DeepgramClient(os.getenv('DG_API_KEY'))
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count())
@@ -139,12 +141,14 @@ class AudioTranscriber:
     async def process_file(self, file_path: Path) -> None:
         try:
             file_path = file_path.resolve()
+            
+            if self.file_tracker.is_file_processed(file_path):
+                logger.info(f"File {file_path} has already been processed. Skipping.")
+                return
+
             transcript_path = file_path.with_suffix('.md')
             diarized_transcript_path = file_path.with_name(f"{file_path.stem}_diarized.md")
-
-            if transcript_path.exists() and diarized_transcript_path.exists():
-                logger.info(f"Transcripts already exist for {file_path}. Skipping.")
-                return
+            json_path = file_path.with_suffix('.json')
 
             logger.info(f"Processing file: {file_path}")
             
@@ -161,7 +165,13 @@ class AudioTranscriber:
             if json_response:
                 logger.info(f"Writing transcripts to {transcript_path} and {diarized_transcript_path}")
                 await self.json_to_markdown(json_response, transcript_path, diarized_transcript_path)
-                logger.info(f"Transcripts saved successfully")
+                
+                logger.info(f"Writing JSON response to {json_path}")
+                async with aiofiles.open(json_path, 'w', encoding='utf-8') as json_file:
+                    await json_file.write(json.dumps(json_response, indent=2))
+                
+                logger.info(f"Transcripts and JSON saved successfully")
+                self.file_tracker.mark_file_as_processed(file_path)
             else:
                 logger.error(f"Failed to obtain transcription for {audio_path}")
                 
