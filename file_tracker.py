@@ -4,6 +4,7 @@ import hashlib
 import time
 import os
 import logging
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -22,11 +23,11 @@ class FileTracker:
                         return json.loads(content)
                     else:
                         logger.warning(f"The file {self.tracker_file} is empty. Initializing with empty structure.")
-                        return {"directories": {}}
+                        return {"files": []}
             except json.JSONDecodeError:
                 logger.error(f"Invalid JSON in {self.tracker_file}. Initializing with empty structure.")
-                return {"directories": {}}
-        return {"directories": {}}
+                return {"files": []}
+        return {"files": []}
 
     def save_processed_files(self):
         with open(self.tracker_file, 'w') as f:
@@ -41,42 +42,28 @@ class FileTracker:
 
     def is_file_processed(self, file_path: Path) -> bool:
         file_hash = self.get_file_hash(file_path)
-        dir_path = str(file_path.parent)
-        return dir_path in self.processed_files["directories"] and file_hash in self.processed_files["directories"][dir_path]["files"]
+        return any(file['hash'] == file_hash for file in self.processed_files['files'])
 
     def mark_file_as_processed(self, file_path: Path):
         file_hash = self.get_file_hash(file_path)
-        dir_path = str(file_path.parent)
-        file_name = file_path.name
-        file_size = os.path.getsize(file_path)
-        current_time = time.time()
-
-        if dir_path not in self.processed_files["directories"]:
-            self.processed_files["directories"][dir_path] = {"files": {}}
-
-        self.processed_files["directories"][dir_path]["files"][file_hash] = {
-            "name": file_name,
-            "size": file_size,
-            "processed_time": current_time,
+        file_info = {
+            "hash": file_hash,
+            "name": file_path.name,
+            "directory": str(file_path.parent),
+            "size": os.path.getsize(file_path),
+            "processed_time": time.time(),
             "path": str(file_path)
         }
+        self.processed_files['files'].append(file_info)
         self.save_processed_files()
 
-    def remove_file(self, file_path: Path):
-        file_hash = self.get_file_hash(file_path)
-        dir_path = str(file_path.parent)
-        if dir_path in self.processed_files["directories"]:
-            if file_hash in self.processed_files["directories"][dir_path]["files"]:
-                del self.processed_files["directories"][dir_path]["files"][file_hash]
-                if not self.processed_files["directories"][dir_path]["files"]:
-                    del self.processed_files["directories"][dir_path]
-                self.save_processed_files()
-                return True
-        return False
-
-    def get_processed_files_in_directory(self, directory: Path):
-        dir_path = str(directory)
-        return self.processed_files["directories"].get(dir_path, {}).get("files", {})
+    def remove_file(self, file_hash: str):
+        self.processed_files['files'] = [file for file in self.processed_files['files'] if file['hash'] != file_hash]
+        self.save_processed_files()
+        return True
 
     def get_all_processed_files(self):
-        return {dir_path: dir_data["files"] for dir_path, dir_data in self.processed_files["directories"].items()}
+        return self.processed_files['files']
+
+    def get_processed_files_in_directory(self, directory: Path):
+        return [file for file in self.processed_files['files'] if Path(file['directory']) == directory]

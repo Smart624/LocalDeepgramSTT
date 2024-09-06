@@ -7,6 +7,7 @@ from transcriber import AudioTranscriber
 from utils.file_handler import get_language_choice, list_video_files, select_video_file
 from watch import watch_directory
 from file_tracker import FileTracker
+from datetime import datetime
 
 # Initialize logger
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -20,43 +21,73 @@ def get_video_directory():
         print("Invalid directory. Please try again.")
 
 def print_and_manage_processed_files(file_tracker, directory=None):
-    if directory:
-        files = file_tracker.get_processed_files_in_directory(directory)
-        print(f"Processed files in {directory}:")
-    else:
-        files = file_tracker.get_all_processed_files()
-        print("All processed files:")
-
-    if not files:
-        print("No processed files found.")
-        return
-
-    file_list = []
-    for dir_path, dir_files in files.items():
-        print(f"\nDirectory: {dir_path}")
-        for file_hash, file_data in dir_files.items():
-            file_list.append((dir_path, file_hash, file_data))
-            print(f"  {len(file_list)}. {file_data['name']} (Size: {file_data['size']} bytes, Processed: {file_data['processed_time']})")
-
     while True:
-        choice = input("Enter the number of a file to delete it from the processed list (or 0 to return): ")
-        if choice == '0':
+        files = file_tracker.get_processed_files_in_directory(directory) if directory else file_tracker.get_all_processed_files()
+        
+        if not files:
+            print("No processed files found.")
             return
-        try:
-            index = int(choice) - 1
-            if 0 <= index < len(file_list):
-                dir_path, file_hash, file_data = file_list[index]
-                file_path = Path(file_data['path'])
-                if file_tracker.remove_file(file_path):
-                    print(f"File {file_data['name']} removed from processed files.")
-                else:
-                    print(f"Failed to remove {file_data['name']} from processed files.")
-                return
-            else:
-                print("Invalid number. Please try again.")
-        except ValueError:
-            print("Invalid input. Please enter a number.")
 
+        print("\nProcessed Files:")
+        print("{:<5} {:<40} {:<20} {:<15} {:<25}".format("No.", "File Name", "Size", "Processed Date", "Directory"))
+        print("-" * 105)
+
+        for i, file in enumerate(files, 1):
+            size = f"{file['size'] / 1024 / 1024:.2f} MB"
+            processed_date = datetime.fromtimestamp(file['processed_time']).strftime('%Y-%m-%d %H:%M:%S')
+            print("{:<5} {:<40} {:<20} {:<15} {:<25}".format(
+                i, 
+                file['name'][:37] + '...' if len(file['name']) > 40 else file['name'], 
+                size, 
+                processed_date, 
+                Path(file['directory']).name
+            ))
+
+        print("\nOptions:")
+        print("1. Remove a file from the processed list")
+        print("2. View details of a specific file")
+        print("3. Return to main menu")
+
+        choice = input("Enter your choice (1-3): ").strip()
+
+        if choice == '1':
+            file_number = input("Enter the number of the file to remove: ")
+            try:
+                file_number = int(file_number)
+                if 1 <= file_number <= len(files):
+                    file_to_remove = files[file_number - 1]
+                    if file_tracker.remove_file(file_to_remove['hash']):
+                        print(f"File {file_to_remove['name']} removed from processed files.")
+                    else:
+                        print(f"Failed to remove {file_to_remove['name']} from processed files.")
+                else:
+                    print("Invalid file number.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        elif choice == '2':
+            file_number = input("Enter the number of the file to view details: ")
+            try:
+                file_number = int(file_number)
+                if 1 <= file_number <= len(files):
+                    file_details = files[file_number - 1]
+                    print("\nFile Details:")
+                    print(f"Name: {file_details['name']}")
+                    print(f"Directory: {file_details['directory']}")
+                    print(f"Size: {file_details['size'] / 1024 / 1024:.2f} MB")
+                    print(f"Processed Time: {datetime.fromtimestamp(file_details['processed_time']).strftime('%Y-%m-%d %H:%M:%S')}")
+                    print(f"File Hash: {file_details['hash']}")
+                    input("Press Enter to continue...")
+                else:
+                    print("Invalid file number.")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+
+        elif choice == '3':
+            return
+
+        else:
+            print("Invalid choice. Please try again.")
 async def merge_transcriptions(transcriber, directory: Path, include_subfolders: bool):
     def merge_files(dir_path, file_suffix):
         transcripts = []
