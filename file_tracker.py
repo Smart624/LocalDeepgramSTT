@@ -42,7 +42,21 @@ class FileTracker:
 
     def is_file_processed(self, file_path: Path) -> bool:
         file_hash = self.get_file_hash(file_path)
-        return any(file['hash'] == file_hash for file in self.processed_files['files'])
+        
+        # Check if file hash exists in processed files
+        if any(file['hash'] == file_hash for file in self.processed_files['files']):
+            return True
+        
+        # Check for existence of .md files
+        non_diarized_md = file_path.with_suffix('.md')
+        diarized_md = file_path.with_name(f"{file_path.stem}_diarized.md")
+        
+        if non_diarized_md.exists() or diarized_md.exists():
+            # If .md files exist but the file is not in our tracker, add it
+            self.mark_file_as_processed(file_path)
+            return True
+        
+        return False
 
     def mark_file_as_processed(self, file_path: Path):
         file_hash = self.get_file_hash(file_path)
@@ -54,8 +68,10 @@ class FileTracker:
             "processed_time": time.time(),
             "path": str(file_path)
         }
-        self.processed_files['files'].append(file_info)
-        self.save_processed_files()
+        # Check if the file is already in the list
+        if not any(file['hash'] == file_hash for file in self.processed_files['files']):
+            self.processed_files['files'].append(file_info)
+            self.save_processed_files()
 
     def remove_file(self, file_hash: str):
         self.processed_files['files'] = [file for file in self.processed_files['files'] if file['hash'] != file_hash]
